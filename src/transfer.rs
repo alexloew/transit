@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashSet, VecDeque},
     fs, io,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -47,6 +47,7 @@ pub enum TransferEvent {
 #[derive(Debug)]
 pub enum TransferCommand {
     Cancel(usize),
+    Enqueue(Vec<PathBuf>),
 }
 
 pub struct TransferHandle {
@@ -60,13 +61,20 @@ pub fn upload(paths: Vec<PathBuf>, host: String, remote_dir: String) -> Transfer
 
     thread::spawn(move || {
         let destination = scp_destination(&host, &remote_dir);
-        let total_paths = paths.len();
+        let mut queue: VecDeque<PathBuf> = paths.into();
+        let mut total_paths = queue.len();
         let mut canceled = HashSet::new();
+        let mut index = 0;
 
-        // Process the upload list as a queue. Only one scp child is active at a time.
-        for (offset, path) in paths.into_iter().enumerate() {
-            let index = offset + 1;
-            drain_cancel_commands(&command_rx, &mut canceled);
+        // Process the upload queue one item at a time. New items can be appended
+        // via TransferCommand::Enqueue while a transfer is already in progress.
+        loop {
+            drain_commands(&command_rx, &mut canceled, &mut queue, &mut total_paths);
+            let Some(path) = queue.pop_front() else {
+                break;
+            };
+            index += 1;
+
             if canceled.contains(&index) {
                 let _ = tx.send(TransferEvent::Canceled {
                     path,
@@ -145,7 +153,7 @@ pub fn upload(paths: Vec<PathBuf>, host: String, remote_dir: String) -> Transfer
                         }
                         Ok(None) => {
                             thread::sleep(Duration::from_secs(1));
-                            drain_cancel_commands(&command_rx, &mut canceled);
+                            drain_commands(&command_rx, &mut canceled, &mut queue, &mut total_paths);
                             let bytes_sent = remote_size(&host, &remote_target);
                             let _ = tx.send(TransferEvent::Progress {
                                 path: path.clone(),
@@ -194,11 +202,20 @@ pub fn upload(paths: Vec<PathBuf>, host: String, remote_dir: String) -> Transfer
     }
 }
 
-fn drain_cancel_commands(rx: &Receiver<TransferCommand>, canceled: &mut HashSet<usize>) {
+fn drain_commands(
+    rx: &Receiver<TransferCommand>,
+    canceled: &mut HashSet<usize>,
+    queue: &mut VecDeque<PathBuf>,
+    total: &mut usize,
+) {
     loop {
         match rx.try_recv() {
             Ok(TransferCommand::Cancel(index)) => {
                 canceled.insert(index);
+            }
+            Ok(TransferCommand::Enqueue(paths)) => {
+                *total += paths.len();
+                queue.extend(paths);
             }
             Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
         }
