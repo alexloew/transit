@@ -483,11 +483,6 @@ impl App {
     }
 
     fn start_upload(&mut self) {
-        if self.transferring {
-            self.log("A transfer is already running.");
-            return;
-        }
-
         if self.remote_host.trim().is_empty() {
             self.begin_edit_host();
             self.log("Set a remote host before uploading.");
@@ -506,6 +501,28 @@ impl App {
         let paths = self.paths_to_upload();
         if paths.is_empty() {
             self.log("Select or mark at least one local file first.");
+            return;
+        }
+
+        if self.transferring {
+            let queued = self
+                .transfer_tx
+                .as_ref()
+                .is_some_and(|tx| tx.send(TransferCommand::Enqueue(paths.clone())).is_ok());
+
+            if queued {
+                self.log(format!(
+                    "Queued {} more item(s) for upload to {}:{}",
+                    paths.len(),
+                    self.remote_host,
+                    self.remote_cwd
+                ));
+                self.transfer_queue
+                    .extend(paths.iter().cloned().map(UploadQueueItem::queued));
+                self.view_mode = ViewMode::Transfers;
+            } else {
+                self.log("A transfer is already running.");
+            }
             return;
         }
 
