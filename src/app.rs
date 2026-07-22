@@ -519,6 +519,7 @@ impl App {
                 ));
                 self.transfer_queue
                     .extend(paths.iter().cloned().map(UploadQueueItem::queued));
+                self.transfer_selected = self.transfer_queue.len() - 1;
                 self.view_mode = ViewMode::Transfers;
             } else {
                 self.log("A transfer is already running.");
@@ -731,6 +732,7 @@ impl App {
                         0,
                         None,
                     );
+                    self.transfer_selected = index.saturating_sub(1);
                     self.transfer_status = Some(format_transfer_status(
                         "Uploading",
                         index,
